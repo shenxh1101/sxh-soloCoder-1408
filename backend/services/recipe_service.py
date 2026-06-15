@@ -128,29 +128,39 @@ class RecipeService:
         cfg = r.config
         steps: list[dict] = []
         if cfg.stripSpaces:
-            steps.append({'key': 'strip_spaces', 'label': '去除文本列前后空格', 'detail': '所有文本列'})
+            steps.append({'key': 'strip_spaces', 'label': '去除文本列前后空格', 'detail': '所有文本列', 'category': 'basic'})
         if cfg.dropDuplicates:
-            steps.append({'key': 'drop_duplicates', 'label': '删除重复行', 'detail': '完全相同的行只保留第一条'})
+            steps.append({'key': 'drop_duplicates', 'label': '删除重复行', 'detail': '完全相同的行只保留第一条', 'category': 'basic'})
         if cfg.fillNa and cfg.fillNa.enabled:
             steps.append({
                 'key': 'fill_na',
                 'label': '智能填充缺失值',
                 'detail': f"数值列: {cfg.fillNa.numericMethod}，文本列: {cfg.fillNa.textMethod}",
+                'category': 'basic',
             })
         if cfg.normalizeDates:
-            steps.append({'key': 'normalize_dates', 'label': '统一日期格式', 'detail': cfg.dateFormat})
+            steps.append({'key': 'normalize_dates', 'label': '统一日期格式', 'detail': cfg.dateFormat, 'category': 'basic'})
         if cfg.autoFixDtypes:
-            steps.append({'key': 'auto_fix_dtypes', 'label': '自动修正数据类型', 'detail': '数值/文本自动识别'})
+            steps.append({'key': 'auto_fix_dtypes', 'label': '自动修正数据类型', 'detail': '数值/文本自动识别', 'category': 'basic'})
         if cfg.columnRules and len(cfg.columnRules) > 0:
-            steps.append({
-                'key': 'column_rules',
-                'label': '列级自定义规则',
-                'detail': f"共 {len(cfg.columnRules)} 条规则",
-            })
+            for idx, cr in enumerate(cfg.columnRules):
+                if cr.type == 'fillna':
+                    detail = f"列 [{cr.column}] 缺失值 → {cr.method}" + (f": {cr.value}" if cr.method == 'custom' and cr.value is not None else "")
+                    steps.append({'key': f'cr_fillna_{idx}', 'label': '列级·缺失值填充', 'detail': detail, 'category': 'column', 'ruleIndex': idx})
+                elif cr.type == 'normalize_dates':
+                    steps.append({'key': f'cr_normdates_{idx}', 'label': '列级·统一日期格式', 'detail': f"列 [{cr.column}] → {cr.format}", 'category': 'column', 'ruleIndex': idx})
+                elif cr.type == 'fix_dtype':
+                    extra = ""
+                    if cr.dtype == 'bool' and cr.mapping:
+                        extra = f" 真值:{len(cr.mapping.trueValues)}项/假值:{len(cr.mapping.falseValues)}项"
+                    steps.append({'key': f'cr_fixdtype_{idx}', 'label': '列级·类型修正', 'detail': f"列 [{cr.column}] → {cr.dtype}{extra}", 'category': 'column', 'ruleIndex': idx})
+                elif cr.type == 'bool_semantic':
+                    steps.append({'key': f'cr_boolsem_{idx}', 'label': '列级·语义化布尔', 'detail': f"列 [{cr.column}] 自定义映射", 'category': 'column', 'ruleIndex': idx})
         return {
             'id': r.id,
             'name': r.name,
             'description': r.description,
             'stepCount': len(steps),
             'steps': steps,
+            'config': cfg.model_dump(),
         }

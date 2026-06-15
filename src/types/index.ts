@@ -136,6 +136,8 @@ export interface RecipeSummaryStep {
   key: string;
   label: string;
   detail: string;
+  category?: 'basic' | 'column';
+  ruleIndex?: number;
 }
 
 export interface RecipeSummary {
@@ -144,6 +146,7 @@ export interface RecipeSummary {
   description: string;
   stepCount: number;
   steps: RecipeSummaryStep[];
+  config?: SmartCleanConfig;
 }
 
 export interface CleaningRecipe {

@@ -3,7 +3,7 @@ import {
   Eraser, Trash2, Type, Calendar, AlignLeft, ChevronDown, ChevronUp, Wand2,
   Plus, Settings, FlaskConical, Save, FolderKanban, Eye, Check, X, AlertTriangle,
   Lightbulb, Trash, LayoutGrid, ClipboardCheck, Download, Upload, ListChecks,
-  ArrowRight, Play, RotateCcw, GripVertical,
+  ArrowRight, Play, RotateCcw, GripVertical, FileDiff, Search, ZoomIn,
 } from 'lucide-react';
 import { useDataStore } from '@/store/useDataStore';
 import {
@@ -11,11 +11,11 @@ import {
   smartClean, boolPreview, fixBool,
   listRecipes, createRecipe, deleteRecipe, applyRecipe,
   getRecipeSummary, importRecipe, getRecipeExportUrl,
-  getSnapshot,
+  getSnapshot, getStepDiff,
 } from '@/utils/api';
 import type {
   FillMethod, DtypeOption, SmartCleanConfig, BoolMapping, BoolPreviewResult,
-  CleaningRecipe, ColumnInfo, RecipeSummary, ColumnCleanRule,
+  CleaningRecipe, ColumnInfo, RecipeSummary, ColumnCleanRule, StepChangeDetail,
 } from '@/types';
 
 const DEFAULT_BOOL_MAP: BoolMapping = {
@@ -102,6 +102,28 @@ export default function CleaningPanel() {
   const [expandedStepIdx, setExpandedStepIdx] = useState<number | null>(null);
   const [stepDetailCache, setStepDetailCache] = useState<Record<number, any>>({});
   const [stepDetailLoading, setStepDetailLoading] = useState(false);
+
+  const [showStepModal, setShowStepModal] = useState(false);
+  const [stepModalIdx, setStepModalIdx] = useState<number | null>(null);
+  const [stepModalData, setStepModalData] = useState<StepChangeDetail | null>(null);
+  const [stepModalLoading, setStepModalLoading] = useState(false);
+
+  // 草稿（批量列操作）
+  const [columnDrafts, setColumnDrafts] = useState<Array<{ name: string; rules: ColumnCleanRule[]; savedAt: number }>>(() => {
+    try {
+      const s = localStorage.getItem('csv_column_drafts');
+      return s ? JSON.parse(s) : [];
+    } catch { return []; }
+  });
+  const [draftName, setDraftName] = useState('');
+  const [showDraftSaveModal, setShowDraftSaveModal] = useState(false);
+  const [showDraftLoadModal, setShowDraftLoadModal] = useState(false);
+
+  // 配方对比 & 选择性套用
+  const [showRecipeCompareModal, setShowRecipeCompareModal] = useState(false);
+  const [compareTarget, setCompareTarget] = useState<RecipeSummary | null>(null);
+  const [compareSelectedKeys, setCompareSelectedKeys] = useState<Set<string>>(new Set());
+  const [compareMode, setCompareMode] = useState<'override' | 'merge' | 'select'>('select');
 
   const { viewingSnapshot, snapshotStepIndex, viewSnapshot, exitSnapshotView, currentStep } = useDataStore();
 
@@ -267,10 +289,165 @@ export default function CleaningPanel() {
     if (!recipeId) return;
     try {
       const s = await getRecipeSummary(recipeId);
-      setPreviewRecipeSummary(s);
-      setShowRecipePreview(true);
+      setCompareTarget(s);
+      // 默认 select 模式下，选中所有步骤
+      const allKeys = new Set(s.steps.map((st) => st.key));
+      setCompareSelectedKeys(allKeys);
+      setCompareMode('select');
+      setShowRecipeCompareModal(true);
     } catch (e: any) {
       setError(e.message || '获取配方预览失败');
+    }
+  };
+
+  // 计算差异（和当前 smartCfg / columnRules 对比）
+  const computeDiffList = useMemo(() => {
+    if (!compareTarget?.config) return [];
+    const rc = compareTarget.config;
+    const diffs: Array<{ key: string; label: string; current: string; recipe: string; status: 'same' | 'diff' | 'new' }> = [];
+    const push = (k: string, label: string, cur: string, rec: string) => {
+      const same = cur === rec;
+      diffs.push({ key: k, label, current: cur || '(未设置)', recipe: rec, status: same ? 'same' : 'diff' });
+    };
+    push('stripSpaces', '去除文本空格', String(smartCfg.stripSpaces), String(rc.stripSpaces));
+    push('dropDuplicates', '删除重复行', String(smartCfg.dropDuplicates), String(rc.dropDuplicates));
+    push('fillNa.enabled', '智能填充缺失', String(!!smartCfg.fillNa?.enabled), String(!!rc.fillNa?.enabled));
+    if (rc.fillNa?.enabled || smartCfg.fillNa?.enabled) {
+      push('fillNa.numericMethod', '  数值列方案', smartCfg.fillNa?.numericMethod || '-', rc.fillNa?.numericMethod || '-');
+      push('fillNa.textMethod', '  文本列方案', smartCfg.fillNa?.textMethod || '-', rc.fillNa?.textMethod || '-');
+    }
+    push('normalizeDates', '统一日期格式', String(smartCfg.normalizeDates), String(rc.normalizeDates));
+    if (rc.normalizeDates || smartCfg.normalizeDates) {
+      push('dateFormat', '  日期格式', smartCfg.dateFormat, rc.dateFormat);
+    }
+    push('autoFixDtypes', '自动修正类型', String(smartCfg.autoFixDtypes), String(rc.autoFixDtypes));
+    push('columnRules', '列级自定义规则', `${smartCfg.columnRules.length} 条`, `${rc.columnRules?.length ?? 0} 条`);
+    return diffs;
+  }, [compareTarget, smartCfg]);
+
+  // 把选中的步骤同步到 smartCfg 和 columnRules（预览，不直接套用到数据）
+  const syncSelectedToConfig = () => {
+    if (!compareTarget?.config) return;
+    const rc = compareTarget.config;
+    let nextCfg: SmartCleanConfig = JSON.parse(JSON.stringify(smartCfg));
+    let nextCRules: ColumnCleanRule[] = JSON.parse(JSON.stringify(compareMode === 'override' ? [] : columnRules));
+
+    const keys = compareSelectedKeys;
+    const hasSel = (k: string) => compareMode !== 'select' || keys.has(k);
+    if (compareMode === 'override') {
+      // 覆盖模式：从配方默认值开始，只对未选中的步骤回退
+      nextCfg = {
+        ...JSON.parse(JSON.stringify(DEFAULT_SMART_CONFIG)),
+        columnRules: [],
+      };
+      if (!keys.has('strip_spaces')) nextCfg.stripSpaces = smartCfg.stripSpaces;
+      if (!keys.has('drop_duplicates')) nextCfg.dropDuplicates = smartCfg.dropDuplicates;
+      if (!keys.has('fill_na')) {
+        nextCfg.fillNa = smartCfg.fillNa ? { ...smartCfg.fillNa } : undefined;
+      } else {
+        nextCfg.fillNa = rc.fillNa ? { ...rc.fillNa } : undefined;
+      }
+      if (!keys.has('normalize_dates')) {
+        nextCfg.normalizeDates = smartCfg.normalizeDates;
+        nextCfg.dateFormat = smartCfg.dateFormat;
+      } else {
+        nextCfg.normalizeDates = rc.normalizeDates;
+        nextCfg.dateFormat = rc.dateFormat;
+      }
+      if (!keys.has('auto_fix_dtypes')) nextCfg.autoFixDtypes = smartCfg.autoFixDtypes;
+      // column rules：先收集配方里勾选的 ruleIndex，再把当前未勾选的追加
+      const keepRecipeIdx: number[] = [];
+      compareTarget.steps.forEach((st) => {
+        if (st.category === 'column' && st.ruleIndex != null && keys.has(st.key)) {
+          keepRecipeIdx.push(st.ruleIndex);
+        }
+      });
+      const recipeCols = keepRecipeIdx
+        .map((i) => rc.columnRules?.[i])
+        .filter(Boolean) as ColumnCleanRule[];
+      const curKeepIdx: number[] = [];
+      compareTarget.steps.forEach((st) => {
+        if (st.category === 'column' && st.ruleIndex != null && !keys.has(st.key) && st.ruleIndex < smartCfg.columnRules.length) {
+          curKeepIdx.push(st.ruleIndex);
+        }
+      });
+      const curCols = smartCfg.columnRules.filter((_, i) => !compareTarget!.steps.some(
+        (s) => s.category === 'column' && s.ruleIndex === i
+      ) || curKeepIdx.includes(i));
+      nextCRules = [...recipeCols, ...curCols];
+    } else {
+      // 叠加 / 勾选模式：在当前基础上合并
+      if (hasSel('strip_spaces')) nextCfg.stripSpaces = nextCfg.stripSpaces || rc.stripSpaces;
+      if (hasSel('drop_duplicates')) nextCfg.dropDuplicates = nextCfg.dropDuplicates || rc.dropDuplicates;
+      if (hasSel('fill_na') && rc.fillNa?.enabled) {
+        nextCfg.fillNa = { ...rc.fillNa };
+      }
+      if (hasSel('normalize_dates') && rc.normalizeDates) {
+        nextCfg.normalizeDates = true;
+        nextCfg.dateFormat = rc.dateFormat;
+      }
+      if (hasSel('auto_fix_dtypes')) nextCfg.autoFixDtypes = nextCfg.autoFixDtypes || rc.autoFixDtypes;
+      // 列级规则
+      compareTarget.steps.forEach((st) => {
+        if (st.category === 'column' && st.ruleIndex != null && hasSel(st.key)) {
+          const r = rc.columnRules?.[st.ruleIndex];
+          if (r) {
+            // 同列同类型覆盖，否则追加
+            const existIdx = nextCRules.findIndex(
+              (x) => (x as any).column === (r as any).column && x.type === r.type
+            );
+            if (existIdx >= 0) nextCRules[existIdx] = JSON.parse(JSON.stringify(r));
+            else nextCRules.push(JSON.parse(JSON.stringify(r)));
+          }
+        }
+      });
+    }
+    nextCfg.columnRules = nextCRules;
+    setSmartCfg(nextCfg);
+    setColumnRules(nextCRules);
+    setError('');
+  };
+
+  // 模式变化时，重算默认勾选（select 模式默认全选；merge 默认全选；override 默认全选）
+  useEffect(() => {
+    if (!compareTarget) return;
+    const allKeys = new Set(compareTarget.steps.map((st) => st.key));
+    setCompareSelectedKeys(allKeys);
+    // 每次打开或切模式时先同步一次「如果现在点套用」的状态，方便编辑
+    syncSelectedToConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareTarget, compareMode]);
+
+  // select 模式下，勾选变化时实时同步到配置区
+  useEffect(() => {
+    if (!compareTarget || compareMode !== 'select') return;
+    syncSelectedToConfig();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compareSelectedKeys]);
+
+  const toggleSelectStep = (key: string) => {
+    setCompareSelectedKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  const applyRecipeFromCompare = async () => {
+    if (!selectedRecipeId) return;
+    // 同步最终配置再 apply
+    syncSelectedToConfig();
+    try {
+      setRecipeApplying(true);
+      setError('');
+      const r = await applyRecipe(sessionId, selectedRecipeId);
+      setResponse(r);
+      setShowRecipeCompareModal(false);
+      setCompareTarget(null);
+    } catch (e: any) {
+      setError(e.message || '套用配方失败');
+    } finally {
+      setRecipeApplying(false);
     }
   };
 
@@ -304,11 +481,51 @@ export default function CleaningPanel() {
 
   const handleViewStepSnapshot = async (stepIndex: number) => {
     if (!sessionId) return;
+    const cached = stepDetailCache[stepIndex];
+    if (cached) {
+      setStepModalData(cached);
+      setStepModalIdx(stepIndex);
+      setShowStepModal(true);
+      return;
+    }
+    setStepModalLoading(true);
     try {
-      const snap = await getSnapshot(sessionId, stepIndex);
-      viewSnapshot(stepIndex, snap.data, snap.columns, snap.detection);
+      const [diff] = await Promise.all([
+        getStepDiff(sessionId, stepIndex),
+      ]);
+      const wrapped: StepChangeDetail = {
+        step: stepIndex,
+        operation: smartSteps[stepIndex - smartStartStep - 1]?.operation || '',
+        description: smartSteps[stepIndex - smartStartStep - 1]?.description || '',
+        before: diff.rows?.before != null ? {
+          rowCount: diff.rows?.before ?? 0,
+          columnCount: diff.columns?.before ?? 0,
+          totalNullCount: diff.nulls?.before ?? 0,
+          duplicateCount: diff.duplicates?.before ?? 0,
+        } : {},
+        after: diff.rows?.after != null ? {
+          rowCount: diff.rows?.after ?? 0,
+          columnCount: diff.columns?.after ?? 0,
+          totalNullCount: diff.nulls?.after ?? 0,
+          duplicateCount: diff.duplicates?.after ?? 0,
+        } : {},
+        diff: {
+          rows: diff.rows?.diff ?? 0,
+          columns: diff.columns?.diff ?? 0,
+          nulls: diff.nulls?.diff ?? 0,
+          duplicates: diff.duplicates?.diff ?? 0,
+        },
+        affectedColumns: diff.affectedColumns || [],
+        columnDiffs: diff.columnDiffs || [],
+      };
+      setStepDetailCache((c) => ({ ...c, [stepIndex]: wrapped }));
+      setStepModalData(wrapped);
+      setStepModalIdx(stepIndex);
+      setShowStepModal(true);
     } catch (e: any) {
-      setError(e.message || '获取快照失败');
+      setError(e.message || '获取步骤详情失败');
+    } finally {
+      setStepModalLoading(false);
     }
   };
 
@@ -342,6 +559,33 @@ export default function CleaningPanel() {
     setColumnRules((prev) =>
       prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r))
     );
+  };
+
+  const saveDraft = () => {
+    if (columnRules.length === 0) { setError('暂无规则可保存'); return; }
+    if (!draftName.trim()) { setError('请输入草稿名称'); return; }
+    const newDrafts = [
+      { name: draftName.trim(), rules: JSON.parse(JSON.stringify(columnRules)), savedAt: Date.now() },
+      ...columnDrafts,
+    ].slice(0, 20);
+    setColumnDrafts(newDrafts);
+    localStorage.setItem('csv_column_drafts', JSON.stringify(newDrafts));
+    setDraftName('');
+    setShowDraftSaveModal(false);
+    setError('');
+  };
+
+  const loadDraft = (idx: number) => {
+    const d = columnDrafts[idx];
+    if (!d) return;
+    setColumnRules(JSON.parse(JSON.stringify(d.rules)));
+    setShowDraftLoadModal(false);
+  };
+
+  const deleteDraft = (idx: number) => {
+    const newDrafts = columnDrafts.filter((_, i) => i !== idx);
+    setColumnDrafts(newDrafts);
+    localStorage.setItem('csv_column_drafts', JSON.stringify(newDrafts));
   };
 
   const handleBatchRun = async () => {
@@ -658,52 +902,206 @@ export default function CleaningPanel() {
             <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] text-slate-400 flex items-center gap-1">
                 <ListChecks className="w-3 h-3" />
-                清洗流程（{smartSteps.length} 步）
+                清洗流程审阅（{smartSteps.length} 步）
               </div>
-              {viewingSnapshot && (
-                <button
-                  onClick={exitSnapshotView}
-                  className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
-                >
-                  <RotateCcw className="w-3 h-3" /> 返回最终结果
-                </button>
-              )}
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               {smartSteps.map((step, i) => {
                 const snapIdx = smartStartStep + i + 1;
-                const isActive = viewingSnapshot && snapshotStepIndex === snapIdx;
+                const cached = stepDetailCache[snapIdx];
+                const rows = cached?.diff?.rows;
+                const nulls = cached?.diff?.nulls;
+                const dups = cached?.diff?.duplicates;
+                const affectedCount = cached?.affectedColumns?.length ?? 0;
+                const fmtDelta = (n: number | undefined) => {
+                  if (n === undefined || n === 0) return <span className="text-slate-500">0</span>;
+                  if (n > 0) return <span className="text-amber-400">+{n}</span>;
+                  return <span className="text-emerald-400">{n}</span>;
+                };
                 return (
-                  <button
+                  <div
                     key={step.id || i}
-                    onClick={() => handleViewStepSnapshot(snapIdx)}
-                    className={`w-full text-left flex items-center gap-2 p-2 rounded-md text-xs transition ${
-                      isActive
-                        ? 'bg-blue-500/20 border border-blue-500/40 text-blue-200'
-                        : 'bg-slate-800/60 border border-slate-700 text-slate-300 hover:bg-slate-700/60'
-                    }`}
+                    className="rounded-md border border-slate-700 bg-slate-800/60 overflow-hidden"
                   >
-                    <div className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium ${
-                      isActive ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300'
-                    }`}>
-                      {i + 1}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium truncate">{step.description}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{step.operation}</div>
-                    </div>
-                    <Eye className="w-3 h-3 text-slate-500" />
-                  </button>
+                    <button
+                      onClick={() => handleViewStepSnapshot(snapIdx)}
+                      className="w-full text-left p-2 flex items-start gap-2 hover:bg-slate-700/40 transition"
+                    >
+                      <div className="shrink-0 w-6 h-6 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 text-white flex items-center justify-center text-[11px] font-semibold">
+                        {i + 1}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-slate-100 truncate">{step.description}</div>
+                        <div className="text-[10px] text-slate-500 mt-0.5 font-mono">{step.operation}</div>
+                        <div className="flex items-center gap-3 mt-1.5 text-[10px] flex-wrap">
+                          <span className="inline-flex items-center gap-1">
+                            <span className="text-slate-500">行数</span>
+                            {cached ? fmtDelta(rows) : <span className="text-slate-600">—</span>}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="text-slate-500">缺失</span>
+                            {cached ? fmtDelta(nulls) : <span className="text-slate-600">—</span>}
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <span className="text-slate-500">重复</span>
+                            {cached ? fmtDelta(dups) : <span className="text-slate-600">—</span>}
+                          </span>
+                          {cached && affectedCount > 0 && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300">
+                              {affectedCount} 列受影响
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <ZoomIn className="w-3.5 h-3.5 text-slate-500 shrink-0 mt-0.5" />
+                    </button>
+                  </div>
                 );
               })}
             </div>
             <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
               <Lightbulb className="w-3 h-3 text-amber-400" />
-              点击步骤可查看该步执行后的数据快照
+              点击步骤卡弹出详情窗口：影响列、前后样本值、规则说明
             </div>
           </div>
         )}
       </Section>
+
+      {/* 步骤详情弹层 */}
+      {showStepModal && stepModalData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-3xl max-h-[85vh] flex flex-col bg-slate-900 border border-slate-700 rounded-xl shadow-2xl">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-cyan-500 text-white flex items-center justify-center text-sm font-semibold">
+                  #{(stepModalIdx ?? 0) - smartStartStep}
+                </div>
+                <div>
+                  <div className="text-sm font-semibold text-slate-100">{stepModalData.description}</div>
+                  <div className="text-[11px] text-slate-500 font-mono">{stepModalData.operation}</div>
+                </div>
+              </div>
+              <button onClick={() => setShowStepModal(false)} className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-5 space-y-4">
+              {/* 指标变化面板 */}
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: '行数', before: stepModalData.before?.rowCount, after: stepModalData.after?.rowCount, diff: stepModalData.diff?.rows },
+                  { label: '列数', before: stepModalData.before?.columnCount, after: stepModalData.after?.columnCount, diff: stepModalData.diff?.columns },
+                  { label: '缺失值', before: stepModalData.before?.totalNullCount, after: stepModalData.after?.totalNullCount, diff: stepModalData.diff?.nulls },
+                  { label: '重复行', before: stepModalData.before?.duplicateCount, after: stepModalData.after?.duplicateCount, diff: stepModalData.diff?.duplicates },
+                ].map((it) => (
+                  <div key={it.label} className="p-2.5 rounded-lg bg-slate-800/60 border border-slate-700">
+                    <div className="text-[10px] text-slate-500 uppercase tracking-wider">{it.label}</div>
+                    <div className="mt-1 flex items-baseline gap-1 text-[11px] font-mono">
+                      <span className="text-slate-400">{it.before ?? '-'}</span>
+                      <ArrowRight className="w-3 h-3 text-slate-600" />
+                      <span className="text-slate-100 font-semibold">{it.after ?? '-'}</span>
+                    </div>
+                    <div className={`text-[11px] mt-0.5 font-semibold ${
+                      (it.diff ?? 0) > 0 ? 'text-amber-400' : (it.diff ?? 0) < 0 ? 'text-emerald-400' : 'text-slate-500'
+                    }`}>
+                      {(it.diff ?? 0) > 0 ? '+' : ''}{it.diff ?? 0}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* 影响列 + 前后样本 */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <LayoutGrid className="w-3.5 h-3.5 text-blue-400" />
+                  <span className="text-xs font-medium text-slate-200">影响列详情</span>
+                  <span className="text-[10px] text-slate-500">（共 {stepModalData.affectedColumns.length} 列）</span>
+                </div>
+                {stepModalData.columnDiffs && stepModalData.columnDiffs.length > 0 ? (
+                  <div className="space-y-2 max-h-[250px] overflow-y-auto pr-1">
+                    {stepModalData.columnDiffs.map((cd) => (
+                      <div key={cd.column} className="p-2.5 rounded-lg bg-slate-800/40 border border-slate-700">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs font-medium text-blue-300 font-mono">{cd.column}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {cd.dtypeBefore && cd.dtypeBefore !== cd.dtypeAfter ? (
+                              <>{cd.dtypeBefore} <ArrowRight className="inline w-2.5 h-2.5" /> {cd.dtypeAfter}</>
+                            ) : cd.dtypeBefore || '-'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-4 text-[10px] mb-2">
+                          <span className="text-slate-400">
+                            缺失: <span className="text-slate-200 font-mono">{cd.nullsBefore}</span>
+                            <ArrowRight className="inline w-2.5 h-2.5 mx-0.5 text-slate-600" />
+                            <span className="text-slate-200 font-mono">{cd.nullsAfter}</span>
+                            <span className={`ml-1 font-semibold ${
+                              cd.nullsDiff > 0 ? 'text-amber-400' : cd.nullsDiff < 0 ? 'text-emerald-400' : 'text-slate-500'
+                            }`}>
+                              {cd.nullsDiff > 0 ? '+' : ''}{cd.nullsDiff}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">改前样本</div>
+                            <div className="flex flex-wrap gap-1">
+                              {(cd.sampleBefore || []).map((v, i) => (
+                                <span key={i} className="px-1.5 py-0.5 text-[10px] font-mono bg-slate-900/80 text-slate-300 rounded border border-slate-700 max-w-[120px] truncate" title={String(v ?? '')}>
+                                  {v === null || v === undefined ? '∅' : String(v)}
+                                </span>
+                              ))}
+                              {(!cd.sampleBefore || cd.sampleBefore.length === 0) && (
+                                <span className="text-[10px] text-slate-600">-</span>
+                              )}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="text-[10px] text-slate-500 mb-1 uppercase tracking-wider">改后样本</div>
+                            <div className="flex flex-wrap gap-1">
+                              {(cd.sampleAfter || []).map((v, i) => (
+                                <span key={i} className="px-1.5 py-0.5 text-[10px] font-mono bg-emerald-900/30 text-emerald-200 rounded border border-emerald-800/50 max-w-[120px] truncate" title={String(v ?? '')}>
+                                  {v === null || v === undefined ? '∅' : String(v)}
+                                </span>
+                              ))}
+                              {(!cd.sampleAfter || cd.sampleAfter.length === 0) && (
+                                <span className="text-[10px] text-slate-600">-</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-slate-500 text-center py-3 border border-dashed border-slate-700 rounded-md">
+                    本步骤无列级变更（可能是整体去重或空格清洗等行级操作）
+                  </div>
+                )}
+              </div>
+
+              {/* 规则说明 */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Settings className="w-3.5 h-3.5 text-amber-400" />
+                  <span className="text-xs font-medium text-slate-200">使用的规则</span>
+                </div>
+                <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-700 text-[11px] text-slate-300 font-mono">
+                  <div>op: <span className="text-blue-300">{stepModalData.operation}</span></div>
+                  <div className="mt-0.5">desc: <span className="text-emerald-300">{stepModalData.description}</span></div>
+                </div>
+              </div>
+            </div>
+            <div className="px-5 py-3 border-t border-slate-700 shrink-0 flex justify-end">
+              <button
+                onClick={() => setShowStepModal(false)}
+                className="px-4 py-1.5 text-xs rounded-md bg-blue-600 hover:bg-blue-500 text-white transition"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Section id="batch" title="批量列操作" icon={LayoutGrid}>
         <p className="text-[11px] text-slate-400 mb-2">
@@ -833,7 +1231,99 @@ export default function CleaningPanel() {
             <Play className="w-3 h-3" /> 批量执行
           </button>
         </div>
+        <div className="flex gap-1.5 mt-1.5">
+          <button
+            onClick={() => setShowDraftSaveModal(true)}
+            disabled={columnRules.length === 0}
+            className="flex-1 py-1 text-[10px] rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-40 text-slate-300 transition flex items-center justify-center gap-1"
+          >
+            <Save className="w-2.5 h-2.5" /> 存为草稿
+          </button>
+          <button
+            onClick={() => setShowDraftLoadModal(true)}
+            disabled={columnDrafts.length === 0}
+            className="flex-1 py-1 text-[10px] rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-40 text-slate-300 transition flex items-center justify-center gap-1"
+          >
+            <FolderKanban className="w-2.5 h-2.5" /> 回填草稿 ({columnDrafts.length})
+          </button>
+        </div>
       </Section>
+
+      {/* 草稿保存 Modal */}
+      {showDraftSaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <Save className="w-4 h-4 text-emerald-400" /> 保存为草稿
+              </div>
+              <button onClick={() => setShowDraftSaveModal(false)} className="p-1 rounded hover:bg-slate-800 text-slate-400"><X className="w-4 h-4" /></button>
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">草稿名称</label>
+              <input
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="比如：HR 入职表列清洗方案"
+                className="w-full p-2 text-xs bg-slate-800 border border-slate-600 rounded-md text-slate-200 focus:border-emerald-500 outline-none"
+                autoFocus
+              />
+            </div>
+            <div className="text-[11px] text-slate-500 bg-slate-800/40 p-2 rounded-md">
+              共 <span className="text-slate-200 font-mono">{columnRules.length}</span> 条规则，保存在本地浏览器中
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setShowDraftSaveModal(false)}
+                className="px-3 py-1.5 text-[11px] rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+              >取消</button>
+              <button
+                onClick={saveDraft}
+                className="px-3 py-1.5 text-[11px] rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition"
+              >保存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 草稿回填 Modal */}
+      {showDraftLoadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md max-h-[70vh] flex flex-col bg-slate-900 border border-slate-700 rounded-xl shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+              <div className="text-sm font-semibold text-slate-100 flex items-center gap-2">
+                <FolderKanban className="w-4 h-4 text-blue-400" /> 选择草稿回填
+              </div>
+              <button onClick={() => setShowDraftLoadModal(false)} className="p-1 rounded hover:bg-slate-800 text-slate-400"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {columnDrafts.length === 0 && (
+                <div className="text-[11px] text-slate-500 text-center py-6">暂无草稿</div>
+              )}
+              {columnDrafts.map((d, i) => (
+                <div key={i} className="p-3 rounded-lg bg-slate-800/60 border border-slate-700 flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium text-slate-200 truncate">{d.name}</div>
+                    <div className="text-[10px] text-slate-500 mt-0.5">
+                      {d.rules.length} 条规则 · {new Date(d.savedAt).toLocaleString('zh-CN')}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button
+                      onClick={() => loadDraft(i)}
+                      className="px-2 py-1 text-[10px] rounded bg-blue-600 hover:bg-blue-500 text-white transition"
+                    >回填</button>
+                    <button
+                      onClick={() => deleteDraft(i)}
+                      className="px-2 py-1 text-[10px] rounded bg-slate-700 hover:bg-rose-600 text-slate-300 hover:text-white transition"
+                    ><Trash2 className="w-3 h-3" /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <Section id="fillna" title="填充缺失值" icon={Eraser}>
         <select
@@ -1118,62 +1608,162 @@ export default function CleaningPanel() {
         </button>
       </Section>
 
-      {showRecipePreview && previewRecipeSummary && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
-             onClick={() => setShowRecipePreview(false)}>
-          <div className="w-full max-w-md mx-4 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl"
-               onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
-              <div className="flex items-center gap-2">
-                <ListChecks className="w-4 h-4 text-blue-400" />
-                <span className="text-sm font-medium text-slate-100">配方预览</span>
+      {/* 配方对比 & 选择性套用 Modal */}
+      {showRecipeCompareModal && compareTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-3xl max-h-[90vh] flex flex-col bg-slate-900 border border-slate-700 rounded-xl shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3 border-b border-slate-700 shrink-0">
+              <div>
+                <div className="flex items-center gap-2">
+                  <FileDiff className="w-4 h-4 text-violet-400" />
+                  <span className="text-sm font-semibold text-slate-100">配方对比</span>
+                </div>
+                <div className="text-xs text-slate-400 mt-0.5">
+                  <span className="text-violet-300 font-medium">{compareTarget.name}</span>
+                  {compareTarget.description ? ` · ${compareTarget.description}` : ''}
+                </div>
               </div>
-              <button
-                onClick={() => setShowRecipePreview(false)}
-                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
-              >
+              <button onClick={() => { setShowRecipeCompareModal(false); setCompareTarget(null); }} className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition">
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <div className="p-4">
-              <div className="text-base font-semibold text-slate-100">{previewRecipeSummary.name}</div>
-              <div className="text-xs text-slate-400 mt-1">{previewRecipeSummary.description || '无描述'}</div>
-              <div className="mt-3 text-[11px] text-slate-500 flex items-center gap-1">
-                <ListChecks className="w-3 h-3" />
-                共 {previewRecipeSummary.stepCount} 个步骤
-              </div>
-              <div className="mt-3 space-y-1.5">
-                {previewRecipeSummary.steps.map((s, i) => (
-                  <div key={i} className="flex items-start gap-2 p-2 rounded-md bg-slate-800/50 border border-slate-700/60">
-                    <div className="shrink-0 w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-medium">
-                      {i + 1}
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-slate-200">{s.label}</div>
-                      <div className="text-[11px] text-slate-400 mt-0.5">{s.detail}</div>
-                    </div>
-                  </div>
+
+            {/* Mode tabs */}
+            <div className="px-5 pt-3 border-b border-slate-700/50 shrink-0">
+              <div className="flex items-center gap-1 text-[11px] mb-3 bg-slate-800/50 p-0.5 rounded-lg w-fit">
+                {[
+                  { k: 'select', label: '勾选步骤', desc: '只挑选几步加入当前流程' },
+                  { k: 'merge', label: '叠加合并', desc: '在当前基础上合并配方' },
+                  { k: 'override', label: '整份覆盖', desc: '用配方替换当前配置' },
+                ].map((m) => (
+                  <button
+                    key={m.k}
+                    onClick={() => setCompareMode(m.k as any)}
+                    className={`px-3 py-1.5 rounded-md transition ${
+                      compareMode === m.k
+                        ? 'bg-slate-700 text-slate-100 shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                    title={m.desc}
+                  >{m.label}</button>
                 ))}
               </div>
+              <div className="text-[10px] text-slate-500 pb-3">
+                💡 当前配置区已根据选择同步，你可以继续编辑或直接套用
+              </div>
             </div>
-            <div className="flex justify-end gap-2 px-4 py-3 border-t border-slate-700">
-              <button
-                onClick={() => setShowRecipePreview(false)}
-                className="px-3 py-1.5 text-xs rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
-              >
-                关闭
-              </button>
-              <button
-                onClick={() => {
-                  setSelectedRecipeId(previewRecipeSummary.id);
-                  setShowRecipePreview(false);
-                  handleApplyRecipe();
-                }}
-                disabled={recipeApplying}
-                className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition flex items-center gap-1.5"
-              >
-                <Play className="w-3 h-3" /> 套用此配方
-              </button>
+
+            <div className="flex-1 overflow-hidden flex">
+              {/* 左：差异清单 */}
+              <div className="w-1/2 overflow-y-auto p-4 border-r border-slate-700/50">
+                <div className="text-xs font-medium text-slate-200 mb-2 flex items-center gap-1.5">
+                  <Search className="w-3.5 h-3.5 text-blue-400" /> 当前配置 vs 配方
+                </div>
+                <div className="space-y-1">
+                  {computeDiffList.map((d) => (
+                    <div key={d.key} className="p-2 rounded-md bg-slate-800/40 border border-slate-700/60">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] text-slate-300">{d.label}</span>
+                        {d.status === 'same' && <span className="text-[10px] text-emerald-400 flex items-center gap-0.5"><Check className="w-2.5 h-2.5" />一致</span>}
+                        {d.status === 'diff' && <span className="text-[10px] text-amber-400 flex items-center gap-0.5"><AlertTriangle className="w-2.5 h-2.5" />不同</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5 mt-1 text-[10px]">
+                        <div>
+                          <div className="text-slate-500 mb-0.5">当前</div>
+                          <div className="text-slate-200 font-mono px-1.5 py-0.5 rounded bg-slate-900/70">{d.current}</div>
+                        </div>
+                        <div>
+                          <div className="text-violet-400 mb-0.5">配方</div>
+                          <div className="text-violet-200 font-mono px-1.5 py-0.5 rounded bg-violet-950/40 border border-violet-900/40">{d.recipe}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* 右：步骤勾选 */}
+              <div className="w-1/2 overflow-y-auto p-4">
+                <div className="text-xs font-medium text-slate-200 mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <ClipboardCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    步骤勾选
+                  </span>
+                  <span className="text-[10px] text-slate-500">
+                    {compareSelectedKeys.size}/{compareTarget.steps.length} 项
+                  </span>
+                </div>
+                {compareMode === 'select' && (
+                  <div className="flex gap-1 mb-2">
+                    <button
+                      onClick={() => setCompareSelectedKeys(new Set(compareTarget.steps.map((s) => s.key)))}
+                      className="px-2 py-0.5 text-[10px] rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+                    >全选</button>
+                    <button
+                      onClick={() => setCompareSelectedKeys(new Set())}
+                      className="px-2 py-0.5 text-[10px] rounded bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+                    >清空</button>
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  {compareTarget.steps.map((s, i) => {
+                    const checked = compareMode !== 'select' || compareSelectedKeys.has(s.key);
+                    const disabled = compareMode !== 'select';
+                    return (
+                      <button
+                        key={s.key || i}
+                        onClick={() => !disabled && toggleSelectStep(s.key)}
+                        className={`w-full text-left p-2 rounded-md border transition flex items-start gap-2 ${
+                          checked
+                            ? 'bg-emerald-950/30 border-emerald-800/50 hover:bg-emerald-950/50'
+                            : 'bg-slate-800/30 border-slate-700/60 hover:bg-slate-800/50'
+                        } ${disabled ? 'cursor-default' : 'cursor-pointer'}`}
+                      >
+                        <div className={`shrink-0 w-4 h-4 mt-0.5 rounded border flex items-center justify-center transition ${
+                          checked
+                            ? 'bg-emerald-600 border-emerald-500'
+                            : 'bg-slate-900 border-slate-600'
+                        }`}>
+                          {checked && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            {s.category === 'column' && (
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">列级</span>
+                            )}
+                            {s.category === 'basic' && (
+                              <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/20 text-blue-300 font-medium">基础</span>
+                            )}
+                            <span className={`text-[11px] font-medium ${checked ? 'text-slate-100' : 'text-slate-400'}`}>{s.label}</span>
+                          </div>
+                          <div className={`text-[10px] mt-0.5 ${checked ? 'text-slate-400' : 'text-slate-600'}`}>{s.detail}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-5 py-3 border-t border-slate-700 shrink-0 flex items-center justify-between">
+              <div className="text-[11px] text-slate-500">
+                套用后将调用 smartClean 流水线执行最终配置
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setShowRecipeCompareModal(false); setCompareTarget(null); }}
+                  className="px-3 py-1.5 text-xs rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+                >取消</button>
+                <button
+                  onClick={applyRecipeFromCompare}
+                  disabled={recipeApplying || compareSelectedKeys.size === 0}
+                  className="px-4 py-1.5 text-xs rounded-md bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-40 text-white transition flex items-center gap-1.5"
+                >
+                  <Play className="w-3 h-3" /> {recipeApplying ? '套用中…' : '同步配置并套用'}
+                </button>
+              </div>
             </div>
           </div>
         </div>

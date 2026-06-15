@@ -120,3 +120,17 @@ class HistoryService:
     def get_initial_df(self, session_id: str) -> Optional[pd.DataFrame]:
         session = self._sessions.get(session_id)
         return session['initial_df'].copy(deep=True) if session else None
+
+    def get_snapshot_by_index(self, session_id: str, index: int) -> Optional[pd.DataFrame]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        if index < 0 or index > len(session['snapshots']) - 1:
+            return None
+        return session['snapshots'][index].copy(deep=True)
+
+    def get_step_diff_by_index(self, session_id: str, step_index: int) -> Optional[dict]:
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        return session['step_diffs'].get(step_index)

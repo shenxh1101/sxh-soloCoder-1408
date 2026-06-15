@@ -15,6 +15,7 @@
       "normalizeDates": false,
       "dateFormat": "%Y-%m-%d",
       "autoFixDtypes": false,
+      "columnRules": [],
       "usedRecipeId": null
     },
     "createdAt": 1781492976.4055746
@@ -30,6 +31,7 @@
       "normalizeDates": true,
       "dateFormat": "%Y-%m-%d",
       "autoFixDtypes": true,
+      "columnRules": [],
       "usedRecipeId": null
     },
     "createdAt": 1781492976.4055874
@@ -50,6 +52,7 @@
       "normalizeDates": true,
       "dateFormat": "%Y/%m/%d",
       "autoFixDtypes": true,
+      "columnRules": [],
       "usedRecipeId": null
     },
     "createdAt": 1781493775.2425835

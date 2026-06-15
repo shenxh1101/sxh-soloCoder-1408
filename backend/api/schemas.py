@@ -130,15 +130,51 @@ class BoolPreviewResult(BaseModel):
     samples: list[BoolPreviewRow] = []
 
 
-class SmartCleanStep(BaseModel):
-    enabled: bool = False
-
-
 class FillNaStrategy(BaseModel):
     enabled: bool = True
     numericMethod: Literal['mean', 'median'] = 'mean'
     textMethod: Literal['mode', 'custom'] = 'mode'
     customValue: Optional[Any] = None
+
+
+class ColumnRuleFillNa(BaseModel):
+    type: Literal['fillna'] = 'fillna'
+    column: str
+    method: Literal['mean', 'median', 'mode', 'custom'] = 'mean'
+    value: Optional[Any] = None
+
+
+class ColumnRuleNormalizeDates(BaseModel):
+    type: Literal['normalize_dates'] = 'normalize_dates'
+    column: str
+    format: str = '%Y-%m-%d'
+
+
+class ColumnRuleFixDtype(BaseModel):
+    type: Literal['fix_dtype'] = 'fix_dtype'
+    column: str
+    dtype: Literal['int', 'float', 'string', 'datetime', 'bool'] = 'string'
+    mapping: Optional[BoolMapping] = None
+
+
+class ColumnRuleBoolSemantic(BaseModel):
+    type: Literal['bool_semantic'] = 'bool_semantic'
+    column: str
+    mapping: Optional[BoolMapping] = None
+
+
+ColumnCleanRule = ColumnRuleFillNa | ColumnRuleNormalizeDates | ColumnRuleFixDtype | ColumnRuleBoolSemantic
+
+
+class ColumnDiffDetail(BaseModel):
+    column: str
+    nullsBefore: int = 0
+    nullsAfter: int = 0
+    nullsDiff: int = 0
+    dtypeBefore: str = ''
+    dtypeAfter: str = ''
+    sampleBefore: list = []
+    sampleAfter: list = []
 
 
 class SmartCleanConfig(BaseModel):
@@ -148,6 +184,7 @@ class SmartCleanConfig(BaseModel):
     normalizeDates: bool = False
     dateFormat: str = '%Y-%m-%d'
     autoFixDtypes: bool = False
+    columnRules: list[ColumnCleanRule] = []
     usedRecipeId: Optional[str] = None
 
 
@@ -158,6 +195,8 @@ class StepChangeDetail(BaseModel):
     before: dict
     after: dict
     diff: dict
+    affectedColumns: list[str] = []
+    columnDiffs: list[ColumnDiffDetail] = []
 
 
 class CleaningRecipe(BaseModel):

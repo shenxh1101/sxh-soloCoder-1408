@@ -1,18 +1,21 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Eraser, Trash2, Type, Calendar, AlignLeft, ChevronDown, ChevronUp, Wand2,
   Plus, Settings, FlaskConical, Save, FolderKanban, Eye, Check, X, AlertTriangle,
-  Lightbulb, Trash, LayoutGrid, ClipboardCheck,
+  Lightbulb, Trash, LayoutGrid, ClipboardCheck, Download, Upload, ListChecks,
+  ArrowRight, Play, RotateCcw, GripVertical,
 } from 'lucide-react';
 import { useDataStore } from '@/store/useDataStore';
 import {
   fillNa, dropDuplicates, fixDtypes, normalizeDates, stripSpaces,
   smartClean, boolPreview, fixBool,
   listRecipes, createRecipe, deleteRecipe, applyRecipe,
+  getRecipeSummary, importRecipe, getRecipeExportUrl,
+  getSnapshot,
 } from '@/utils/api';
 import type {
   FillMethod, DtypeOption, SmartCleanConfig, BoolMapping, BoolPreviewResult,
-  CleaningRecipe, ColumnInfo,
+  CleaningRecipe, ColumnInfo, RecipeSummary, ColumnCleanRule,
 } from '@/types';
 
 const DEFAULT_BOOL_MAP: BoolMapping = {
@@ -33,6 +36,7 @@ const DEFAULT_SMART_CONFIG: SmartCleanConfig = {
   normalizeDates: false,
   dateFormat: '%Y-%m-%d',
   autoFixDtypes: false,
+  columnRules: [],
 };
 
 type NumericMethod = 'mean' | 'median';
@@ -65,7 +69,7 @@ export default function CleaningPanel() {
     setRecipeList,
   } = useDataStore();
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    smart: true, fillna: false, drop: false, dtype: false, dates: false, strip: false, recipe: false,
+    smart: true, batch: false, fillna: false, drop: false, dtype: false, dates: false, strip: false, recipe: false,
   });
   const [fillCol, setFillCol] = useState('');
   const [fillMethod, setFillMethod] = useState<FillMethod>('mean');
@@ -85,6 +89,18 @@ export default function CleaningPanel() {
   const [selectedRecipeId, setSelectedRecipeId] = useState<string>('');
   const [recipeSaving, setRecipeSaving] = useState(false);
   const [recipeApplying, setRecipeApplying] = useState(false);
+  const [recipeImporting, setRecipeImporting] = useState(false);
+  const [showRecipePreview, setShowRecipePreview] = useState(false);
+  const [previewRecipeSummary, setPreviewRecipeSummary] = useState<RecipeSummary | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
+
+  const [columnRules, setColumnRules] = useState<ColumnCleanRule[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const [smartSteps, setSmartSteps] = useState<any[]>([]);
+  const [smartStartStep, setSmartStartStep] = useState(0);
+
+  const { viewingSnapshot, snapshotStepIndex, viewSnapshot, exitSnapshotView, currentStep } = useDataStore();
 
   useEffect(() => {
     if (sessionId && (!recipeList || recipeList.length === 0)) {
@@ -167,8 +183,23 @@ export default function CleaningPanel() {
 
   const handleStrip = () => run(() => stripSpaces(sessionId!, {}), '去除空格');
 
-  const handleSmartClean = () => {
-    run(() => smartClean(sessionId!, smartCfg), '一键智能清洗');
+  const handleSmartClean = async () => {
+    setLoading(true);
+    setError('');
+    const startStep = currentStep;
+    try {
+      const res = await smartClean(sessionId!, smartCfg);
+      setResponse(res);
+      if (res.smartCleanSteps) {
+        setSmartSteps(res.smartCleanSteps);
+        setSmartStartStep(startStep);
+      }
+      exitSnapshotView();
+    } catch (e: any) {
+      setError(e.message || '一键智能清洗失败');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const runBoolPreview = async () => {
@@ -191,6 +222,7 @@ export default function CleaningPanel() {
     setError('');
     try {
       const cfg: SmartCleanConfig = JSON.parse(JSON.stringify(smartCfg));
+      cfg.columnRules = columnRules;
       const r = await createRecipe({ name: newRecipeName.trim(), description: newRecipeDesc.trim(), config: cfg });
       const list = await listRecipes();
       setRecipeList(list);
@@ -228,6 +260,55 @@ export default function CleaningPanel() {
     }
   };
 
+  const handlePreviewRecipe = async (recipeId: string) => {
+    if (!recipeId) return;
+    try {
+      const s = await getRecipeSummary(recipeId);
+      setPreviewRecipeSummary(s);
+      setShowRecipePreview(true);
+    } catch (e: any) {
+      setError(e.message || '获取配方预览失败');
+    }
+  };
+
+  const handleExportRecipe = (recipeId: string) => {
+    const url = getRecipeExportUrl(recipeId);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `recipe_${recipeId}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleImportRecipe = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRecipeImporting(true);
+    setError('');
+    try {
+      const r = await importRecipe(file);
+      const list = await listRecipes();
+      setRecipeList(list);
+      setSelectedRecipeId(r.id);
+    } catch (err: any) {
+      setError(err.message || '导入配方失败');
+    } finally {
+      setRecipeImporting(false);
+      if (importFileRef.current) importFileRef.current.value = '';
+    }
+  };
+
+  const handleViewStepSnapshot = async (stepIndex: number) => {
+    if (!sessionId) return;
+    try {
+      const snap = await getSnapshot(sessionId, stepIndex);
+      viewSnapshot(stepIndex, snap.data, snap.columns, snap.detection);
+    } catch (e: any) {
+      setError(e.message || '获取快照失败');
+    }
+  };
+
   const updateSmartCfg = <K extends keyof SmartCleanConfig>(k: K, v: SmartCleanConfig[K]) => {
     setSmartCfg((s) => ({ ...s, [k]: v }));
   };
@@ -240,6 +321,48 @@ export default function CleaningPanel() {
       ...s,
       fillNa: s.fillNa ? { ...s.fillNa, [k]: v } : undefined,
     }));
+  };
+
+  const addColumnRule = () => {
+    const firstCol = detection?.columns[0]?.name || '';
+    setColumnRules((prev) => [
+      ...prev,
+      { type: 'fillna', column: firstCol, method: 'mean' } as ColumnCleanRule,
+    ]);
+  };
+
+  const removeColumnRule = (idx: number) => {
+    setColumnRules((prev) => prev.filter((_, i) => i !== idx));
+  };
+
+  const updateColumnRule = (idx: number, key: string, value: any) => {
+    setColumnRules((prev) =>
+      prev.map((r, i) => (i === idx ? { ...r, [key]: value } : r))
+    );
+  };
+
+  const handleBatchRun = async () => {
+    if (columnRules.length === 0) return;
+    setBatchRunning(true);
+    setError('');
+    try {
+      const cfg: SmartCleanConfig = {
+        dropDuplicates: false,
+        stripSpaces: false,
+        fillNa: undefined,
+        normalizeDates: false,
+        dateFormat: '%Y-%m-%d',
+        autoFixDtypes: false,
+        columnRules: columnRules,
+      };
+      const res = await smartClean(sessionId!, cfg);
+      setResponse(res);
+      exitSnapshotView();
+    } catch (e: any) {
+      setError(e.message || '批量执行失败');
+    } finally {
+      setBatchRunning(false);
+    }
   };
 
   const Section = ({
@@ -304,6 +427,22 @@ export default function CleaningPanel() {
               ))}
             </select>
             <button
+              onClick={() => selectedRecipeId && handlePreviewRecipe(selectedRecipeId)}
+              disabled={!selectedRecipeId}
+              className="shrink-0 px-2 text-xs rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition"
+              title="预览配方步骤"
+            >
+              <Eye className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => selectedRecipeId && handleExportRecipe(selectedRecipeId)}
+              disabled={!selectedRecipeId}
+              className="shrink-0 px-2 text-xs rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition"
+              title="导出配方"
+            >
+              <Download className="w-4 h-4" />
+            </button>
+            <button
               onClick={handleApplyRecipe}
               disabled={!selectedRecipeId || recipeApplying}
               className="shrink-0 px-2.5 text-xs rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition"
@@ -312,6 +451,22 @@ export default function CleaningPanel() {
               <ClipboardCheck className="w-4 h-4" />
             </button>
           </div>
+          <div className="flex gap-1.5 mt-1.5">
+            <button
+              onClick={() => importFileRef.current?.click()}
+              disabled={recipeImporting}
+              className="flex-1 py-1.5 text-[11px] rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-300 transition flex items-center justify-center gap-1 border border-slate-600"
+            >
+              <Upload className="w-3 h-3" /> 导入配方
+            </button>
+          </div>
+          <input
+            ref={importFileRef}
+            type="file"
+            accept=".json,application/json"
+            onChange={handleImportRecipe}
+            className="hidden"
+          />
           {selectedRecipeId && (() => {
             const r = (recipeList || []).find((x) => x.id === selectedRecipeId);
             if (!r) return null;
@@ -325,6 +480,7 @@ export default function CleaningPanel() {
                   {r.config.fillNa?.enabled && <span>智能填充</span>}
                   {r.config.normalizeDates && <span>日期({r.config.dateFormat})</span>}
                   {r.config.autoFixDtypes && <span>修类型</span>}
+                  {r.config.columnRules?.length > 0 && <span>列级规则×{r.config.columnRules.length}</span>}
                 </div>
                 {(r.id !== 'default' && r.id !== 'hr_basic') && (
                   <button
@@ -493,6 +649,187 @@ export default function CleaningPanel() {
           <FlaskConical className="w-4 h-4" />
           开始执行配置流程
         </button>
+
+        {smartSteps.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-slate-700">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-[11px] text-slate-400 flex items-center gap-1">
+                <ListChecks className="w-3 h-3" />
+                清洗流程（{smartSteps.length} 步）
+              </div>
+              {viewingSnapshot && (
+                <button
+                  onClick={exitSnapshotView}
+                  className="text-[11px] text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
+                >
+                  <RotateCcw className="w-3 h-3" /> 返回最终结果
+                </button>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              {smartSteps.map((step, i) => {
+                const snapIdx = smartStartStep + i + 1;
+                const isActive = viewingSnapshot && snapshotStepIndex === snapIdx;
+                return (
+                  <button
+                    key={step.id || i}
+                    onClick={() => handleViewStepSnapshot(snapIdx)}
+                    className={`w-full text-left flex items-center gap-2 p-2 rounded-md text-xs transition ${
+                      isActive
+                        ? 'bg-blue-500/20 border border-blue-500/40 text-blue-200'
+                        : 'bg-slate-800/60 border border-slate-700 text-slate-300 hover:bg-slate-700/60'
+                    }`}
+                  >
+                    <div className={`shrink-0 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium ${
+                      isActive ? 'bg-blue-500 text-white' : 'bg-slate-700 text-slate-300'
+                    }`}>
+                      {i + 1}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium truncate">{step.description}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">{step.operation}</div>
+                    </div>
+                    <Eye className="w-3 h-3 text-slate-500" />
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2 text-[10px] text-slate-500 flex items-center gap-1">
+              <Lightbulb className="w-3 h-3 text-amber-400" />
+              点击步骤可查看该步执行后的数据快照
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section id="batch" title="批量列操作" icon={LayoutGrid}>
+        <p className="text-[11px] text-slate-400 mb-2">
+          为多列分别设置清洗规则，统一提交执行。每列独立一条规则，历史记录中可按列追溯。
+        </p>
+        {columnRules.length === 0 && (
+          <div className="text-[11px] text-slate-500 text-center py-3 border border-dashed border-slate-600 rounded-md">
+            暂无规则，点击下方按钮添加
+          </div>
+        )}
+        {columnRules.length > 0 && (
+          <div className="space-y-2 mb-2 max-h-64 overflow-y-auto pr-1">
+            {columnRules.map((rule, idx) => (
+              <div key={idx} className="p-2 rounded-md bg-slate-900/60 border border-slate-700 space-y-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-slate-700 text-slate-300 flex items-center justify-center text-[10px] font-medium">
+                    {idx + 1}
+                  </span>
+                  <select
+                    value={rule.column}
+                    onChange={(e) => updateColumnRule(idx, 'column', e.target.value)}
+                    className="flex-1 min-w-0 p-1.5 text-[11px] bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                  >
+                    {detection?.columns.map((c) => (
+                      <option key={c.name} value={c.name}>{c.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => removeColumnRule(idx)}
+                    className="shrink-0 p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-slate-700 transition"
+                    title="删除此规则"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] text-slate-500 shrink-0 w-8">操作</span>
+                  <select
+                    value={rule.type}
+                    onChange={(e) => {
+                      const t = e.target.value as any;
+                      let newRule: any = { type: t, column: rule.column };
+                      if (t === 'fillna') newRule.method = 'mean';
+                      if (t === 'normalize_dates') newRule.format = '%Y-%m-%d';
+                      if (t === 'fix_dtype') newRule.dtype = 'string';
+                      if (t === 'bool_semantic') newRule.mapping = { ...DEFAULT_BOOL_MAP };
+                      setColumnRules((prev) => prev.map((r, i) => (i === idx ? newRule : r)));
+                    }}
+                    className="flex-1 min-w-0 p-1.5 text-[11px] bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                  >
+                    <option value="fillna">填充缺失值</option>
+                    <option value="normalize_dates">标准化日期</option>
+                    <option value="fix_dtype">类型转换</option>
+                    <option value="bool_semantic">语义化布尔</option>
+                  </select>
+                </div>
+                {rule.type === 'fillna' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500 shrink-0 w-8">方式</span>
+                    <select
+                      value={(rule as any).method}
+                      onChange={(e) => updateColumnRule(idx, 'method', e.target.value)}
+                      className="flex-1 p-1.5 text-[11px] bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                    >
+                      <option value="mean">均值</option>
+                      <option value="median">中位数</option>
+                      <option value="mode">众数</option>
+                      <option value="custom">自定义值</option>
+                    </select>
+                    {(rule as any).method === 'custom' && (
+                      <input
+                        value={(rule as any).value || ''}
+                        onChange={(e) => updateColumnRule(idx, 'value', e.target.value)}
+                        placeholder="值"
+                        className="flex-1 p-1.5 text-[11px] bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                      />
+                    )}
+                  </div>
+                )}
+                {rule.type === 'normalize_dates' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500 shrink-0 w-8">格式</span>
+                    <input
+                      value={(rule as any).format || '%Y-%m-%d'}
+                      onChange={(e) => updateColumnRule(idx, 'format', e.target.value)}
+                      className="flex-1 p-1.5 text-[11px] font-mono bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                    />
+                  </div>
+                )}
+                {rule.type === 'fix_dtype' && (
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-slate-500 shrink-0 w-8">目标类型</span>
+                    <select
+                      value={(rule as any).dtype}
+                      onChange={(e) => updateColumnRule(idx, 'dtype', e.target.value)}
+                      className="flex-1 p-1.5 text-[11px] bg-slate-800 border border-slate-600 rounded text-slate-200 focus:border-blue-500 outline-none"
+                    >
+                      <option value="int">整数 int</option>
+                      <option value="float">浮点数 float</option>
+                      <option value="string">文本 string</option>
+                      <option value="datetime">日期 datetime</option>
+                      <option value="bool">布尔 bool</option>
+                    </select>
+                  </div>
+                )}
+                {rule.type === 'bool_semantic' && (
+                  <div className="text-[10px] text-slate-500">
+                    按默认语义映射（true/yes/1/是/对 → True）
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-1.5">
+          <button
+            onClick={addColumnRule}
+            className="flex-1 py-1.5 text-[11px] rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition flex items-center justify-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> 添加规则
+          </button>
+          <button
+            onClick={handleBatchRun}
+            disabled={columnRules.length === 0 || batchRunning}
+            className="flex-1 py-1.5 text-[11px] rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition flex items-center justify-center gap-1"
+          >
+            <Play className="w-3 h-3" /> 批量执行
+          </button>
+        </div>
       </Section>
 
       <Section id="fillna" title="填充缺失值" icon={Eraser}>
@@ -721,6 +1058,25 @@ export default function CleaningPanel() {
         >
           {dtype === 'bool' ? '应用语义化布尔转换' : '转换类型'}
         </button>
+        {dtype === 'bool' && (
+          <button
+            onClick={() => {
+              if (!dtypeCol) return;
+              const newRule: ColumnCleanRule = {
+                type: 'fix_dtype',
+                column: dtypeCol,
+                dtype: 'bool',
+                mapping: { ...boolMap },
+              };
+              setColumnRules((prev) => [...prev, newRule]);
+              setError(`已添加列 [${dtypeCol}] 的语义化布尔规则到批量操作`);
+            }}
+            disabled={!dtypeCol}
+            className="w-full mt-1.5 py-1.5 text-[11px] rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 transition flex items-center justify-center gap-1"
+          >
+            <Plus className="w-3 h-3" /> 添加到批量列规则（可保存进配方）
+          </button>
+        )}
       </Section>
 
       <Section id="dates" title="标准化日期格式" icon={Calendar}>
@@ -758,6 +1114,67 @@ export default function CleaningPanel() {
           执行去空格
         </button>
       </Section>
+
+      {showRecipePreview && previewRecipeSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+             onClick={() => setShowRecipePreview(false)}>
+          <div className="w-full max-w-md mx-4 rounded-lg bg-slate-900 border border-slate-700 shadow-2xl"
+               onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700">
+              <div className="flex items-center gap-2">
+                <ListChecks className="w-4 h-4 text-blue-400" />
+                <span className="text-sm font-medium text-slate-100">配方预览</span>
+              </div>
+              <button
+                onClick={() => setShowRecipePreview(false)}
+                className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4">
+              <div className="text-base font-semibold text-slate-100">{previewRecipeSummary.name}</div>
+              <div className="text-xs text-slate-400 mt-1">{previewRecipeSummary.description || '无描述'}</div>
+              <div className="mt-3 text-[11px] text-slate-500 flex items-center gap-1">
+                <ListChecks className="w-3 h-3" />
+                共 {previewRecipeSummary.stepCount} 个步骤
+              </div>
+              <div className="mt-3 space-y-1.5">
+                {previewRecipeSummary.steps.map((s, i) => (
+                  <div key={i} className="flex items-start gap-2 p-2 rounded-md bg-slate-800/50 border border-slate-700/60">
+                    <div className="shrink-0 w-5 h-5 rounded-full bg-blue-500/20 text-blue-400 flex items-center justify-center text-[10px] font-medium">
+                      {i + 1}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-xs font-medium text-slate-200">{s.label}</div>
+                      <div className="text-[11px] text-slate-400 mt-0.5">{s.detail}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 px-4 py-3 border-t border-slate-700">
+              <button
+                onClick={() => setShowRecipePreview(false)}
+                className="px-3 py-1.5 text-xs rounded-md bg-slate-700 hover:bg-slate-600 text-slate-200 transition"
+              >
+                关闭
+              </button>
+              <button
+                onClick={() => {
+                  setSelectedRecipeId(previewRecipeSummary.id);
+                  setShowRecipePreview(false);
+                  handleApplyRecipe();
+                }}
+                disabled={recipeApplying}
+                className="px-3 py-1.5 text-xs rounded-md bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white transition flex items-center gap-1.5"
+              >
+                <Play className="w-3 h-3" /> 套用此配方
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

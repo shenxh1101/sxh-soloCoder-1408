@@ -322,6 +322,66 @@ async def delete_recipe(recipe_id: str):
     return {'success': True}
 
 
+@router.get('/recipes/{recipe_id}/summary')
+async def get_recipe_summary(recipe_id: str):
+    s = recipe_service.summarize(recipe_id)
+    if s is None:
+        raise HTTPException(status_code=404, detail='配方不存在')
+    return s
+
+
+@router.get('/recipes/{recipe_id}/export')
+async def export_recipe(recipe_id: str):
+    data = recipe_service.export_dict(recipe_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail='配方不存在')
+    import json
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    filename = f"recipe_{recipe_id}.json"
+    return Response(
+        content=content,
+        media_type='application/json',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
+@router.post('/recipes/import')
+async def import_recipe(file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        import json
+        data = json.loads(content.decode('utf-8'))
+        r = recipe_service.import_from_dict(data)
+        if r is None:
+            raise HTTPException(status_code=400, detail='配方文件格式不正确')
+        return r.model_dump()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'导入失败: {str(e)}')
+
+
+@router.get('/data/{session_id}/snapshot/{step_index}')
+async def get_snapshot(session_id: str, step_index: int):
+    df = history_service.get_snapshot_by_index(session_id, step_index)
+    if df is None:
+        raise HTTPException(status_code=404, detail='快照不存在')
+    records, cols = data_service.df_to_records(df)
+    detection = data_service.detect(df)
+    return {
+        'stepIndex': step_index,
+        'data': records,
+        'columns': cols,
+        'detection': detection.model_dump(),
+    }
+
+
+@router.get('/data/{session_id}/step_diff/{step_index}')
+async def get_step_diff(session_id: str, step_index: int):
+    diff = history_service.get_step_diff_by_index(session_id, step_index)
+    if diff is None:
+        raise HTTPException(status_code=404, detail='步骤不存在')
+    return diff
+
+
 @router.post('/clean/{session_id}/apply_recipe/{recipe_id}')
 async def apply_recipe(session_id: str, recipe_id: str):
     r = recipe_service.get(recipe_id)

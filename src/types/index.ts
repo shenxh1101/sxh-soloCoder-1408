@@ -25,6 +25,17 @@ export interface HistoryEntry {
   params: Record<string, any>;
 }
 
+export interface ColumnDiffDetail {
+  column: string;
+  nullsBefore: number;
+  nullsAfter: number;
+  nullsDiff: number;
+  dtypeBefore: string;
+  dtypeAfter: string;
+  sampleBefore: any[];
+  sampleAfter: any[];
+}
+
 export interface StepChangeDetail {
   step: number;
   operation: string;
@@ -32,6 +43,8 @@ export interface StepChangeDetail {
   before: Record<string, any>;
   after: Record<string, any>;
   diff: Record<string, any>;
+  affectedColumns: string[];
+  columnDiffs: ColumnDiffDetail[];
 }
 
 export interface QualityReport {
@@ -80,6 +93,34 @@ export interface FillNaStrategy {
   customValue?: any;
 }
 
+export interface ColumnRuleFillNa {
+  type: 'fillna';
+  column: string;
+  method: 'mean' | 'median' | 'mode' | 'custom';
+  value?: any;
+}
+
+export interface ColumnRuleNormalizeDates {
+  type: 'normalize_dates';
+  column: string;
+  format: string;
+}
+
+export interface ColumnRuleFixDtype {
+  type: 'fix_dtype';
+  column: string;
+  dtype: 'int' | 'float' | 'string' | 'datetime' | 'bool';
+  mapping?: BoolMapping;
+}
+
+export interface ColumnRuleBoolSemantic {
+  type: 'bool_semantic';
+  column: string;
+  mapping?: BoolMapping;
+}
+
+export type ColumnCleanRule = ColumnRuleFillNa | ColumnRuleNormalizeDates | ColumnRuleFixDtype | ColumnRuleBoolSemantic;
+
 export interface SmartCleanConfig {
   dropDuplicates: boolean;
   stripSpaces: boolean;
@@ -87,7 +128,22 @@ export interface SmartCleanConfig {
   normalizeDates: boolean;
   dateFormat: string;
   autoFixDtypes: boolean;
+  columnRules: ColumnCleanRule[];
   usedRecipeId?: string;
+}
+
+export interface RecipeSummaryStep {
+  key: string;
+  label: string;
+  detail: string;
+}
+
+export interface RecipeSummary {
+  id: string;
+  name: string;
+  description: string;
+  stepCount: number;
+  steps: RecipeSummaryStep[];
 }
 
 export interface CleaningRecipe {

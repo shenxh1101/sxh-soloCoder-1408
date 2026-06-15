@@ -385,12 +385,42 @@ class DataService:
     def get_step_diff(self, before_df: pd.DataFrame, after_df: pd.DataFrame) -> dict:
         before_det = self.detect(before_df)
         after_det = self.detect(after_df)
+        column_diffs = self._get_column_diffs(before_df, after_df)
+        affected = [cd.column for cd in column_diffs if cd.nullsDiff != 0 or cd.dtypeBefore != cd.dtypeAfter]
         return {
             'rows': {'before': before_det.rowCount, 'after': after_det.rowCount, 'diff': after_det.rowCount - before_det.rowCount},
             'columns': {'before': before_det.columnCount, 'after': after_det.columnCount, 'diff': after_det.columnCount - before_det.columnCount},
             'nulls': {'before': before_det.totalNullCount, 'after': after_det.totalNullCount, 'diff': after_det.totalNullCount - before_det.totalNullCount},
             'duplicates': {'before': before_det.duplicateCount, 'after': after_det.duplicateCount, 'diff': after_det.duplicateCount - before_det.duplicateCount},
+            'affectedColumns': affected,
+            'columnDiffs': [cd.model_dump() for cd in column_diffs],
         }
+
+    def _get_column_diffs(self, before_df: pd.DataFrame, after_df: pd.DataFrame) -> list:
+        from backend.api.schemas import ColumnDiffDetail
+        result: list[ColumnDiffDetail] = []
+        common_cols = [c for c in before_df.columns if c in after_df.columns]
+        for col in common_cols:
+            before_series = before_df[col]
+            after_series = after_df[col]
+            nulls_before = int(before_series.isna().sum())
+            nulls_after = int(after_series.isna().sum())
+            dtype_before = str(before_series.dtype)
+            dtype_after = str(after_series.dtype)
+            sample_before = [_san(v) for v in before_series.head(5).tolist()]
+            sample_after = [_san(v) for v in after_series.head(5).tolist()]
+            if nulls_before != nulls_after or dtype_before != dtype_after:
+                result.append(ColumnDiffDetail(
+                    column=col,
+                    nullsBefore=nulls_before,
+                    nullsAfter=nulls_after,
+                    nullsDiff=nulls_after - nulls_before,
+                    dtypeBefore=dtype_before,
+                    dtypeAfter=dtype_after,
+                    sampleBefore=sample_before,
+                    sampleAfter=sample_after,
+                ))
+        return result
 
     def smart_clean(self, df: pd.DataFrame, cfg: SmartCleanConfig) -> list[tuple[str, str, dict, pd.DataFrame]]:
         steps: list[tuple[str, str, dict, pd.DataFrame]] = []
@@ -463,5 +493,38 @@ class DataService:
                     p = FixDtypeParams(column=col, dtype='string')
                     current = self.fix_dtypes(current, p)
                     steps.append(('fix_dtypes', f"自动转换列 [{col}] 为文本类型", p.model_dump(), current))
+
+        if cfg.columnRules and len(cfg.columnRules) > 0:
+            for rule in cfg.columnRules:
+                col = rule.column
+                if col not in current.columns:
+                    continue
+                if rule.type == 'fillna':
+                    p = FillNaParams(column=col, method=rule.method, value=rule.value)
+                    desc = f"列 [{col}] 填充缺失值（{rule.method}）"
+                    current = self.fill_na(current, p)
+                    steps.append(('fillna', desc, p.model_dump(), current))
+                elif rule.type == 'normalize_dates':
+                    p = NormalizeDatesParams(column=col, format=rule.format)
+                    before = current
+                    current = self.normalize_dates(current, p)
+                    if not before[col].equals(current[col]):
+                        steps.append(('normalize_dates', f"标准化日期列 [{col}] 为 {rule.format}", p.model_dump(), current))
+                elif rule.type == 'fix_dtype':
+                    if rule.dtype == 'bool' and rule.mapping:
+                        current = self.fix_bool_semantic(current, col, rule.mapping)
+                        steps.append(('fix_dtypes', f"列 [{col}] 按自定义映射转换为布尔类型",
+                                       {'column': col, 'dtype': 'bool', 'mapping': rule.mapping.model_dump()},
+                                       current))
+                    else:
+                        p = FixDtypeParams(column=col, dtype=rule.dtype)
+                        current = self.fix_dtypes(current, p)
+                        steps.append(('fix_dtypes', f"列 [{col}] 转换为 {rule.dtype} 类型",
+                                       p.model_dump(), current))
+                elif rule.type == 'bool_semantic':
+                    mapping = rule.mapping or BoolMapping()
+                    current = self.fix_bool_semantic(current, col, mapping)
+                    steps.append(('fix_dtypes', f"列 [{col}] 语义化布尔转换",
+                                   {'column': col, 'mapping': mapping.model_dump()}, current))
 
         return steps

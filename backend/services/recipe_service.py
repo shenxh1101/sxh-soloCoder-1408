@@ -89,3 +89,68 @@ class RecipeService:
             self._save()
             return True
         return False
+
+    def export_dict(self, recipe_id: str) -> Optional[dict]:
+        r = self._recipes.get(recipe_id)
+        if not r:
+            return None
+        return {
+            'name': r.name,
+            'description': r.description,
+            'config': r.config.model_dump(),
+            'version': 1,
+            'exportedAt': time.time(),
+        }
+
+    def import_from_dict(self, data: dict) -> Optional[CleaningRecipe]:
+        try:
+            name = data.get('name', '导入配方')
+            desc = data.get('description', '')
+            cfg_raw = data.get('config', {})
+            cfg = SmartCleanConfig(**cfg_raw)
+            r = CleaningRecipe(
+                id=str(uuid.uuid4()),
+                name=name + ' (导入)',
+                description=desc,
+                config=cfg,
+                createdAt=time.time(),
+            )
+            self._recipes[r.id] = r
+            self._save()
+            return r
+        except Exception:
+            return None
+
+    def summarize(self, recipe_id: str) -> Optional[dict]:
+        r = self._recipes.get(recipe_id)
+        if not r:
+            return None
+        cfg = r.config
+        steps: list[dict] = []
+        if cfg.stripSpaces:
+            steps.append({'key': 'strip_spaces', 'label': '去除文本列前后空格', 'detail': '所有文本列'})
+        if cfg.dropDuplicates:
+            steps.append({'key': 'drop_duplicates', 'label': '删除重复行', 'detail': '完全相同的行只保留第一条'})
+        if cfg.fillNa and cfg.fillNa.enabled:
+            steps.append({
+                'key': 'fill_na',
+                'label': '智能填充缺失值',
+                'detail': f"数值列: {cfg.fillNa.numericMethod}，文本列: {cfg.fillNa.textMethod}",
+            })
+        if cfg.normalizeDates:
+            steps.append({'key': 'normalize_dates', 'label': '统一日期格式', 'detail': cfg.dateFormat})
+        if cfg.autoFixDtypes:
+            steps.append({'key': 'auto_fix_dtypes', 'label': '自动修正数据类型', 'detail': '数值/文本自动识别'})
+        if cfg.columnRules and len(cfg.columnRules) > 0:
+            steps.append({
+                'key': 'column_rules',
+                'label': '列级自定义规则',
+                'detail': f"共 {len(cfg.columnRules)} 条规则",
+            })
+        return {
+            'id': r.id,
+            'name': r.name,
+            'description': r.description,
+            'stepCount': len(steps),
+            'steps': steps,
+        }

@@ -197,6 +197,7 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
                       <th className="p-2 text-right font-medium">行数</th>
                       <th className="p-2 text-right font-medium">缺失</th>
                       <th className="p-2 text-right font-medium">重复</th>
+                      <th className="p-2 text-left font-medium">影响列</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -229,6 +230,22 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
                               {s.before.duplicateCount} <ArrowRight className="inline w-3 h-3 text-slate-500 mx-0.5" /> {s.after.duplicateCount}
                               {' '}{rowDelta(s.before.duplicateCount, s.after.duplicateCount)}
                             </span>
+                          ) : <span className="text-slate-500">-</span>}
+                        </td>
+                        <td className="p-2 text-left">
+                          {s.affectedColumns && s.affectedColumns.length > 0 ? (
+                            <div className="flex flex-wrap gap-0.5 max-w-[200px]">
+                              {s.affectedColumns.slice(0, 3).map((c: string) => (
+                                <span key={c} className="px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-300 text-[10px] font-mono">
+                                  {c}
+                                </span>
+                              ))}
+                              {s.affectedColumns.length > 3 && (
+                                <span className="px-1.5 py-0.5 text-slate-500 text-[10px]">
+                                  +{s.affectedColumns.length - 3}
+                                </span>
+                              )}
+                            </div>
                           ) : <span className="text-slate-500">-</span>}
                         </td>
                       </tr>

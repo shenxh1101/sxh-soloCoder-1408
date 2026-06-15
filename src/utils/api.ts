@@ -1,4 +1,7 @@
-import type { ApiResponse, QualityReport, BoolPreviewResult, BoolMapping, SmartCleanConfig, CleaningRecipe } from '@/types';
+import type {
+  ApiResponse, QualityReport, BoolPreviewResult, BoolMapping,
+  SmartCleanConfig, CleaningRecipe, RecipeSummary, DetectionResult,
+} from '@/types';
 
 const API_BASE = '/api';
 
@@ -133,4 +136,33 @@ export async function deleteRecipe(id: string) {
 
 export async function applyRecipe(sessionId: string, recipeId: string) {
   return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/apply_recipe/${recipeId}`, {});
+}
+
+export async function getSnapshot(
+  sessionId: string,
+  stepIndex: number,
+): Promise<{ stepIndex: number; data: Record<string, any>[]; columns: string[]; detection: DetectionResult }> {
+  const res = await fetch(`${API_BASE}/data/${sessionId}/snapshot/${stepIndex}`);
+  return handleResponse(res);
+}
+
+export async function getStepDiff(sessionId: string, stepIndex: number): Promise<any> {
+  const res = await fetch(`${API_BASE}/data/${sessionId}/step_diff/${stepIndex}`);
+  return handleResponse(res);
+}
+
+export async function getRecipeSummary(recipeId: string): Promise<RecipeSummary> {
+  const res = await fetch(`${API_BASE}/recipes/${recipeId}/summary`);
+  return handleResponse<RecipeSummary>(res);
+}
+
+export function getRecipeExportUrl(recipeId: string): string {
+  return `${API_BASE}/recipes/${recipeId}/export`;
+}
+
+export async function importRecipe(file: File): Promise<CleaningRecipe> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(`${API_BASE}/recipes/import`, { method: 'POST', body: form });
+  return handleResponse<CleaningRecipe>(res);
 }

@@ -99,6 +99,9 @@ export default function CleaningPanel() {
 
   const [smartSteps, setSmartSteps] = useState<any[]>([]);
   const [smartStartStep, setSmartStartStep] = useState(0);
+  const [expandedStepIdx, setExpandedStepIdx] = useState<number | null>(null);
+  const [stepDetailCache, setStepDetailCache] = useState<Record<number, any>>({});
+  const [stepDetailLoading, setStepDetailLoading] = useState(false);
 
   const { viewingSnapshot, snapshotStepIndex, viewSnapshot, exitSnapshotView, currentStep } = useDataStore();
 

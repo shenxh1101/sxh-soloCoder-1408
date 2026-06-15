@@ -1,8 +1,11 @@
 import { useState } from 'react';
-import { Download, FileText, X, CheckCircle, AlertTriangle, TrendingUp, Database } from 'lucide-react';
+import {
+  Download, FileText, X, CheckCircle, AlertTriangle, TrendingUp, Database,
+  FolderKanban, LayoutList, ArrowRight,
+} from 'lucide-react';
 import { useDataStore } from '@/store/useDataStore';
 import { getCsvUrl, getExcelUrl, getReport } from '@/utils/api';
-import type { QualityReport } from '@/types';
+import type { QualityReport, StepChangeDetail } from '@/types';
 
 export default function ExportPanel() {
   const { sessionId, setLoading, setError, report, setReport, reportOpen, setReportOpen } = useDataStore();
@@ -86,10 +89,18 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
       ? 'from-amber-500/20 to-amber-500/5 border-amber-500/30'
       : 'from-red-500/20 to-red-500/5 border-red-500/30';
 
+  const rowDelta = (b: number, a: number) => {
+    const d = a - b;
+    if (d === 0) return <span className="text-slate-400">0</span>;
+    return d > 0
+      ? <span className="text-emerald-400">+{d}</span>
+      : <span className="text-rose-400">{d}</span>;
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-2xl w-full max-h-[85vh] overflow-hidden shadow-2xl">
-        <div className="flex items-center justify-between p-4 border-b border-slate-700">
+      <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-3xl w-full max-h-[85vh] overflow-hidden shadow-2xl flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-slate-700 shrink-0">
           <div className="flex items-center gap-2">
             <TrendingUp className="w-5 h-5 text-violet-400" />
             <h2 className="text-base font-semibold text-slate-100">数据质量报告</h2>
@@ -102,7 +113,20 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
           </button>
         </div>
 
-        <div className="p-5 overflow-y-auto space-y-5">
+        <div className="p-5 overflow-y-auto space-y-5 flex-1">
+          {report.usedRecipe && (
+            <div className="p-3 rounded-lg bg-violet-900/20 border border-violet-700/40 flex items-start gap-2.5">
+              <FolderKanban className="w-4.5 h-4.5 text-violet-400 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-xs text-violet-300 font-medium">使用了清洗配方</div>
+                <div className="text-sm text-slate-100 font-medium mt-0.5">{report.usedRecipe.name}</div>
+                {report.usedRecipe.description && (
+                  <div className="text-[11px] text-slate-400 mt-0.5">{report.usedRecipe.description}</div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className={`p-5 rounded-xl bg-gradient-to-br ${scoreBg} border text-center`}>
             <div className="text-xs text-slate-400 mb-1">数据质量评分</div>
             <div className={`text-5xl font-bold ${scoreColor} font-mono`}>
@@ -134,15 +158,86 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
           </div>
 
           <div className="p-4 rounded-lg bg-slate-800/40 border border-slate-700">
-            <div className="text-sm font-medium text-slate-200 mb-3">变更摘要</div>
+            <div className="text-sm font-medium text-slate-200 mb-3">关键指标变化</div>
             <div className="grid grid-cols-2 gap-2 text-sm">
-              <SummaryItem label="总行数变化" value={`${report.summary.rowsRemoved >= 0 ? '-' : '+'}${Math.abs(report.summary.rowsRemoved)} 行`} />
+              <SummaryItem
+                label="总行数变化"
+                value={
+                  <span className={report.summary.rowsRemoved >= 0 ? 'text-rose-300' : 'text-emerald-300'}>
+                    {report.summary.rowsRemoved >= 0 ? '-' : '+'}{Math.abs(report.summary.rowsRemoved)} 行
+                  </span>
+                }
+              />
               <SummaryItem label="缺失值修复" value={`${report.summary.nullsFixed} 个`} />
               <SummaryItem label="重复行删除" value={`${report.summary.duplicatesRemoved} 行`} />
-              <SummaryItem label="列数变化" value={`${report.summary.columnsChanged >= 0 ? '+' : ''}${report.summary.columnsChanged} 列`} />
+              <SummaryItem
+                label="列数变化"
+                value={
+                  <span className={report.summary.columnsChanged >= 0 ? 'text-emerald-300' : 'text-rose-300'}>
+                    {report.summary.columnsChanged >= 0 ? '+' : ''}{report.summary.columnsChanged} 列
+                  </span>
+                }
+              />
               <SummaryItem label="总操作次数" value={`${report.summary.totalOperations} 次`} />
             </div>
           </div>
+
+          {report.stepDetails && report.stepDetails.length > 0 && (
+            <div className="p-4 rounded-lg bg-slate-800/40 border border-slate-700">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-200 mb-3">
+                <LayoutList className="w-4 h-4 text-blue-400" />
+                每步变更详情
+              </div>
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-[11px] min-w-full">
+                  <thead>
+                    <tr className="text-slate-400 border-b border-slate-700">
+                      <th className="p-2 text-left font-medium w-10">#</th>
+                      <th className="p-2 text-left font-medium">操作</th>
+                      <th className="p-2 text-right font-medium">行数</th>
+                      <th className="p-2 text-right font-medium">缺失</th>
+                      <th className="p-2 text-right font-medium">重复</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.stepDetails.map((s: StepChangeDetail) => (
+                      <tr key={s.step} className="border-b border-slate-700/50 hover:bg-slate-800/40">
+                        <td className="p-2 text-slate-500 font-mono">{s.step}</td>
+                        <td className="p-2 text-slate-200 max-w-[220px]">
+                          <div className="truncate" title={s.description}>{s.description}</div>
+                          <div className="text-[10px] text-slate-500 font-mono">{s.operation}</div>
+                        </td>
+                        <td className="p-2 text-right font-mono">
+                          {typeof s.before.rowCount === 'number' && typeof s.after.rowCount === 'number' ? (
+                            <span>
+                              {s.before.rowCount} <ArrowRight className="inline w-3 h-3 text-slate-500 mx-0.5" /> {s.after.rowCount}
+                              {' '}{rowDelta(s.before.rowCount, s.after.rowCount)}
+                            </span>
+                          ) : <span className="text-slate-500">-</span>}
+                        </td>
+                        <td className="p-2 text-right font-mono">
+                          {typeof s.before.totalNullCount === 'number' && typeof s.after.totalNullCount === 'number' ? (
+                            <span>
+                              {s.before.totalNullCount} <ArrowRight className="inline w-3 h-3 text-slate-500 mx-0.5" /> {s.after.totalNullCount}
+                              {' '}{rowDelta(s.before.totalNullCount, s.after.totalNullCount)}
+                            </span>
+                          ) : <span className="text-slate-500">-</span>}
+                        </td>
+                        <td className="p-2 text-right font-mono">
+                          {typeof s.before.duplicateCount === 'number' && typeof s.after.duplicateCount === 'number' ? (
+                            <span>
+                              {s.before.duplicateCount} <ArrowRight className="inline w-3 h-3 text-slate-500 mx-0.5" /> {s.after.duplicateCount}
+                              {' '}{rowDelta(s.before.duplicateCount, s.after.duplicateCount)}
+                            </span>
+                          ) : <span className="text-slate-500">-</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {report.operations.length > 0 && (
             <div className="p-4 rounded-lg bg-slate-800/40 border border-slate-700">
@@ -150,7 +245,7 @@ function ReportModal({ report, onClose }: { report: QualityReport; onClose: () =
               <div className="space-y-1.5 max-h-48 overflow-auto">
                 {report.operations.map((op, i) => (
                   <div key={op.id} className="flex items-center gap-2 text-xs p-2 rounded bg-slate-900/40">
-                    <span className="text-slate-500 font-mono w-5 text-right">{i + 1}.</span>
+                    <span className="text-slate-500 font-mono w-5 text-right shrink-0">{i + 1}.</span>
                     <span className="text-slate-300 flex-1">{op.description}</span>
                   </div>
                 ))}
@@ -175,26 +270,26 @@ function StatCard({
       <div className="space-y-1 text-xs">
         <div className="flex justify-between">
           <span className="text-slate-500">行数</span>
-          <span className="text-slate-200 font-mono">{rows.toLocaleString()}</span>
+          <span className="text-slate-200 font-mono">{(rows ?? 0).toLocaleString()}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-slate-500">列数</span>
-          <span className="text-slate-200 font-mono">{cols}</span>
+          <span className="text-slate-200 font-mono">{cols ?? 0}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-slate-500">缺失值</span>
-          <span className="text-orange-300 font-mono">{nulls.toLocaleString()}</span>
+          <span className="text-orange-300 font-mono">{(nulls ?? 0).toLocaleString()}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-slate-500">重复行</span>
-          <span className="text-red-300 font-mono">{dups.toLocaleString()}</span>
+          <span className="text-red-300 font-mono">{(dups ?? 0).toLocaleString()}</span>
         </div>
       </div>
     </div>
   );
 }
 
-function SummaryItem({ label, value }: { label: string; value: string }) {
+function SummaryItem({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between items-center py-1.5 px-2 rounded bg-slate-900/30">
       <span className="text-slate-400 text-xs">{label}</span>

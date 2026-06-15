@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ApiResponse, DetectionResult, HistoryEntry, QualityReport } from '@/types';
+import type { ApiResponse, DetectionResult, HistoryEntry, QualityReport, CleaningRecipe } from '@/types';
 
 interface DataState {
   sessionId: string | null;
@@ -13,12 +13,14 @@ interface DataState {
   error: string;
   report: QualityReport | null;
   reportOpen: boolean;
+  recipeList: CleaningRecipe[];
 
   setResponse: (r: Partial<ApiResponse>) => void;
   setLoading: (v: boolean) => void;
   setError: (e: string) => void;
   setReport: (r: QualityReport | null) => void;
   setReportOpen: (v: boolean) => void;
+  setRecipeList: (r: CleaningRecipe[]) => void;
   reset: () => void;
 }
 
@@ -34,6 +36,7 @@ export const useDataStore = create<DataState>((set) => ({
   error: '',
   report: null,
   reportOpen: false,
+  recipeList: [],
 
   setResponse: (r) =>
     set((state) => ({
@@ -50,6 +53,7 @@ export const useDataStore = create<DataState>((set) => ({
   setError: (e) => set({ error: e }),
   setReport: (r) => set({ report: r }),
   setReportOpen: (v) => set({ reportOpen: v }),
+  setRecipeList: (r) => set({ recipeList: r }),
   reset: () =>
     set({
       sessionId: null,
@@ -62,5 +66,6 @@ export const useDataStore = create<DataState>((set) => ({
       error: '',
       report: null,
       reportOpen: false,
+      recipeList: [],
     }),
 }));

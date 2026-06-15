@@ -1,5 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, Any, Literal
+import time
+import uuid
 
 
 class ColumnInfo(BaseModel):
@@ -100,9 +102,77 @@ class OperationResponse(BaseModel):
     currentStep: int = 0
 
 
+class BoolMapping(BaseModel):
+    trueValues: list[str] = ['true', 'yes', '1', 't', 'y', '是', '对']
+    falseValues: list[str] = ['false', 'no', '0', 'f', 'n', '否', '错']
+    caseSensitive: bool = False
+
+
+class BoolPreviewRequest(BaseModel):
+    column: str
+    mapping: Optional[BoolMapping] = None
+    limit: int = 20
+
+
+class BoolPreviewRow(BaseModel):
+    original: Any
+    converted: Any
+    status: Literal['true', 'false', 'unmapped', 'null']
+
+
+class BoolPreviewResult(BaseModel):
+    column: str
+    totalRows: int
+    trueCount: int
+    falseCount: int
+    unmappedCount: int
+    nullCount: int
+    samples: list[BoolPreviewRow] = []
+
+
+class SmartCleanStep(BaseModel):
+    enabled: bool = False
+
+
+class FillNaStrategy(BaseModel):
+    enabled: bool = True
+    numericMethod: Literal['mean', 'median'] = 'mean'
+    textMethod: Literal['mode', 'custom'] = 'mode'
+    customValue: Optional[Any] = None
+
+
+class SmartCleanConfig(BaseModel):
+    dropDuplicates: bool = True
+    stripSpaces: bool = True
+    fillNa: Optional[FillNaStrategy] = FillNaStrategy()
+    normalizeDates: bool = False
+    dateFormat: str = '%Y-%m-%d'
+    autoFixDtypes: bool = False
+    usedRecipeId: Optional[str] = None
+
+
+class StepChangeDetail(BaseModel):
+    step: int
+    operation: str
+    description: str
+    before: dict
+    after: dict
+    diff: dict
+
+
+class CleaningRecipe(BaseModel):
+    id: str = ""
+    name: str
+    description: str = ""
+    config: SmartCleanConfig
+    createdAt: float = 0.0
+
+
 class QualityReport(BaseModel):
     filename: str
     initialStats: dict
     finalStats: dict
     operations: list[HistoryEntry] = []
+    stepDetails: list[StepChangeDetail] = []
     summary: dict
+    usedRecipe: Optional[dict] = None

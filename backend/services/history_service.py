@@ -20,12 +20,27 @@ class HistoryService:
             'snapshots': [snapshot],
             'history': [],
             'current_step': 0,
-            'redo_stack': []
+            'redo_stack': [],
+            'used_recipe': None,
+            'step_diffs': {},
         }
         return session_id
 
     def get_session(self, session_id: str) -> Optional[dict]:
         return self._sessions.get(session_id)
+
+    def get_step_diffs(self, session_id: str) -> dict:
+        session = self._sessions.get(session_id)
+        return session.get('step_diffs', {}) if session else {}
+
+    def set_used_recipe(self, session_id: str, recipe_info: dict):
+        session = self._sessions.get(session_id)
+        if session:
+            session['used_recipe'] = recipe_info
+
+    def get_used_recipe(self, session_id: str) -> Optional[dict]:
+        session = self._sessions.get(session_id)
+        return session.get('used_recipe') if session else None
 
     def get_current_df(self, session_id: str) -> Optional[pd.DataFrame]:
         session = self._sessions.get(session_id)
@@ -39,7 +54,8 @@ class HistoryService:
         operation: str,
         description: str,
         params: dict,
-        new_df: pd.DataFrame
+        new_df: pd.DataFrame,
+        diff: Optional[dict] = None,
     ) -> Optional[HistoryEntry]:
         session = self._sessions.get(session_id)
         if not session:
@@ -55,8 +71,11 @@ class HistoryService:
 
         session['snapshots'] = session['snapshots'][:session['current_step'] + 1]
         session['history'] = session['history'][:session['current_step']]
+        session['step_diffs'] = {k: v for k, v in session['step_diffs'].items() if k < session['current_step']}
         session['snapshots'].append(new_df.copy(deep=True))
         session['history'].append(entry)
+        if diff is not None:
+            session['step_diffs'][len(session['history']) - 1] = diff
         session['current_step'] = len(session['history'])
         session['redo_stack'] = []
 

@@ -2,7 +2,7 @@ import io
 import pandas as pd
 from typing import Optional
 
-from backend.api.schemas import QualityReport, HistoryEntry
+from backend.api.schemas import QualityReport, HistoryEntry, StepChangeDetail
 from backend.services.history_service import HistoryService
 from backend.services.data_service import DataService
 
@@ -74,12 +74,46 @@ class ExportService:
             'qualityScore': self._calc_score(initial_stats, final_stats)
         }
 
+        step_diffs = self.history_service.get_step_diffs(session_id)
+        step_details: list[StepChangeDetail] = []
+        snapshots = self.history_service.get_session(session_id)
+        snapshots_list = snapshots.get('snapshots', []) if snapshots else []
+        for i, entry in enumerate(history):
+            diff = step_diffs.get(i, {
+                'rows': {'before': 0, 'after': 0, 'diff': 0},
+                'columns': {'before': 0, 'after': 0, 'diff': 0},
+                'nulls': {'before': 0, 'after': 0, 'diff': 0},
+                'duplicates': {'before': 0, 'after': 0, 'diff': 0},
+            })
+            before_det = {}
+            after_det = {}
+            if i + 1 < len(snapshots_list) and i < len(snapshots_list):
+                try:
+                    bd = self.data_service.detect(snapshots_list[i])
+                    ad = self.data_service.detect(snapshots_list[i + 1])
+                    before_det = {'rowCount': bd.rowCount, 'columnCount': bd.columnCount, 'totalNullCount': bd.totalNullCount, 'duplicateCount': bd.duplicateCount}
+                    after_det = {'rowCount': ad.rowCount, 'columnCount': ad.columnCount, 'totalNullCount': ad.totalNullCount, 'duplicateCount': ad.duplicateCount}
+                except Exception:
+                    pass
+            step_details.append(StepChangeDetail(
+                step=i + 1,
+                operation=entry.operation,
+                description=entry.description,
+                before=before_det,
+                after=after_det,
+                diff=diff,
+            ))
+
+        used_recipe = self.history_service.get_used_recipe(session_id)
+
         return QualityReport(
             filename=filename,
             initialStats=initial_stats,
             finalStats=final_stats,
             operations=history,
-            summary=summary
+            stepDetails=step_details,
+            summary=summary,
+            usedRecipe=used_recipe,
         )
 
     def _calc_score(self, initial: dict, final: dict) -> float:

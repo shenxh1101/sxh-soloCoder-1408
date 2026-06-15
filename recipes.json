@@ -1,0 +1,57 @@
+[
+  {
+    "id": "default",
+    "name": "标准清洗配方",
+    "description": "去重+去空格+智能填充缺失值，适合一般场景",
+    "config": {
+      "dropDuplicates": true,
+      "stripSpaces": true,
+      "fillNa": {
+        "enabled": true,
+        "numericMethod": "mean",
+        "textMethod": "mode",
+        "customValue": null
+      },
+      "normalizeDates": false,
+      "dateFormat": "%Y-%m-%d",
+      "autoFixDtypes": false,
+      "usedRecipeId": null
+    },
+    "createdAt": 1781492976.4055746
+  },
+  {
+    "id": "hr_basic",
+    "name": "人事数据清洗",
+    "description": "自动修正日期和类型，标准化入职日期格式",
+    "config": {
+      "dropDuplicates": true,
+      "stripSpaces": true,
+      "fillNa": null,
+      "normalizeDates": true,
+      "dateFormat": "%Y-%m-%d",
+      "autoFixDtypes": true,
+      "usedRecipeId": null
+    },
+    "createdAt": 1781492976.4055874
+  },
+  {
+    "id": "81ce3346-9fd9-4f0f-9b80-0b5ef4366343",
+    "name": "我的财务配方",
+    "description": "测试用",
+    "config": {
+      "dropDuplicates": true,
+      "stripSpaces": true,
+      "fillNa": {
+        "enabled": true,
+        "numericMethod": "median",
+        "textMethod": "custom",
+        "customValue": "N/A"
+      },
+      "normalizeDates": true,
+      "dateFormat": "%Y/%m/%d",
+      "autoFixDtypes": true,
+      "usedRecipeId": null
+    },
+    "createdAt": 1781493775.2425835
+  }
+]

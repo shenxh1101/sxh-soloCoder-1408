@@ -1,4 +1,4 @@
-import type { ApiResponse, QualityReport } from '@/types';
+import type { ApiResponse, QualityReport, BoolPreviewResult, BoolMapping, SmartCleanConfig, CleaningRecipe } from '@/types';
 
 const API_BASE = '/api';
 
@@ -39,7 +39,7 @@ export async function dropDuplicates(sessionId: string, params: { subset?: strin
   return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/drop_duplicates`, params);
 }
 
-export async function fixDtypes(sessionId: string, params: { column: string; dtype: string }) {
+export async function fixDtypes(sessionId: string, params: { column: string; dtype: string; mapping?: BoolMapping }) {
   return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/fix_dtypes`, params);
 }
 
@@ -90,4 +90,47 @@ export function getExcelUrl(sessionId: string) {
 export async function getReport(sessionId: string): Promise<QualityReport> {
   const res = await fetch(`${API_BASE}/export/${sessionId}/report`);
   return handleResponse<QualityReport>(res);
+}
+
+export async function boolPreview(
+  sessionId: string,
+  params: { column: string; mapping?: BoolMapping; limit?: number },
+): Promise<BoolPreviewResult> {
+  return postJson<BoolPreviewResult>(`${API_BASE}/clean/${sessionId}/bool_preview`, params);
+}
+
+export async function fixBool(
+  sessionId: string,
+  params: { column: string; dtype: string; mapping?: BoolMapping },
+) {
+  return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/fix_bool`, params);
+}
+
+export async function smartClean(sessionId: string, config: SmartCleanConfig) {
+  return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/smart_clean`, config);
+}
+
+export async function listRecipes(): Promise<CleaningRecipe[]> {
+  const res = await fetch(`${API_BASE}/recipes`);
+  return handleResponse<CleaningRecipe[]>(res);
+}
+
+export async function getRecipe(id: string): Promise<CleaningRecipe> {
+  const res = await fetch(`${API_BASE}/recipes/${id}`);
+  return handleResponse<CleaningRecipe>(res);
+}
+
+export async function createRecipe(
+  params: { name: string; description: string; config: SmartCleanConfig },
+): Promise<CleaningRecipe> {
+  return postJson<CleaningRecipe>(`${API_BASE}/recipes`, params);
+}
+
+export async function deleteRecipe(id: string) {
+  const res = await fetch(`${API_BASE}/recipes/${id}`, { method: 'DELETE' });
+  return handleResponse<{ success: boolean }>(res);
+}
+
+export async function applyRecipe(sessionId: string, recipeId: string) {
+  return postJson<ApiResponse>(`${API_BASE}/clean/${sessionId}/apply_recipe/${recipeId}`, {});
 }
